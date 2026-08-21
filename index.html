@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>HONEYPOT // 蜜罐嘲讽系统</title>
+<style>
+  :root {
+    --bg: #0a0e14;
+    --fg: #d7e3f4;
+    --dim: #7a8aa3;
+    --red: #ff4757;
+    --red-soft: rgba(255, 71, 87, .12);
+    --cyan: #00d2ff;
+    --green: #2ecc71;
+    --amber: #ffa502;
+    --border: rgba(255, 255, 255, .10);
+    --glass: rgba(255, 255, 255, .05);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(0, 210, 255, .10), transparent 60%),
+      radial-gradient(900px 500px at 10% 110%, rgba(255, 71, 87, .12), transparent 60%),
+      var(--bg);
+    color: var(--fg);
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    overflow-x: hidden;
+  }
+  /* 背景网格 + 扫描线 */
+  .grid {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: radial-gradient(ellipse at center, black 40%, transparent 90%);
+    -webkit-mask-image: radial-gradient(ellipse at center, black 40%, transparent 90%);
+  }
+  .scanline {
+    position: fixed; left: 0; right: 0; height: 120px; z-index: 0; pointer-events: none;
+    background: linear-gradient(to bottom, transparent, rgba(0,210,255,.05), transparent);
+    animation: scan 7s linear infinite;
+  }
+  @keyframes scan {
+    0% { top: -20%; } 100% { top: 120%; }
+  }
+  .wrap { position: relative; z-index: 1; max-width: 960px; margin: 0 auto; padding: 32px 20px 64px; }
+
+  /* 顶部状态栏 */
+  .topbar {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 18px; border-radius: 12px;
+    background: var(--glass);
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    border: 1px solid var(--border);
+    font-family: Consolas, "Courier New", monospace; font-size: 13px;
+  }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; background: var(--red); animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: .15; } }
+  .status-ok { color: var(--green); }
+  .topbar .right { color: var(--dim); }
+
+  /* 标题区 */
+  .hero { margin: 44px 0 28px; text-align: center; }
+  .hero .kicker {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: Consolas, monospace; font-size: 12px; letter-spacing: 3px;
+    color: var(--red); border: 1px solid rgba(255,71,87,.35); background: var(--red-soft);
+    padding: 6px 16px; border-radius: 999px; text-transform: uppercase;
+  }
+  .hero h1 {
+    margin-top: 18px; font-size: clamp(28px, 5vw, 48px); font-weight: 800; letter-spacing: 2px;
+    background: linear-gradient(90deg, var(--red), #ff9f43);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .hero p { margin-top: 12px; color: var(--dim); font-size: 15px; }
+
+  /* 毛玻璃卡片 */
+  .glass {
+    background: var(--glass);
+    backdrop-filter: blur(20px) saturate(150%);
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+  }
+  .card { padding: 22px 24px; margin-bottom: 22px; }
+  .card h2 {
+    font-size: 13px; letter-spacing: 2px; text-transform: uppercase;
+    color: var(--dim); font-family: Consolas, monospace; margin-bottom: 14px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .card h2::before { content: "//"; color: var(--cyan); }
+
+  /* 检测结果徽章 */
+  .badges { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 6px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 7px 14px; border-radius: 8px; font-size: 13px; font-weight: 600;
+    background: rgba(255,71,87,.10); border: 1px solid rgba(255,71,87,.35); color: var(--red);
+  }
+  .badge.clean { background: rgba(46,204,113,.08); border-color: rgba(46,204,113,.30); color: var(--green); }
+  .kbd {
+    font-family: Consolas, monospace; font-size: 12px; color: var(--amber);
+    background: rgba(255,165,2,.08); border: 1px solid rgba(255,165,2,.30);
+    padding: 2px 8px; border-radius: 6px; word-break: break-all;
+  }
+  .meta-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px; margin-top: 16px;
+  }
+  .meta-item .label { font-size: 11px; color: var(--dim); letter-spacing: 1px; margin-bottom: 4px; font-family: Consolas, monospace; }
+  .meta-item .value { font-size: 13px; font-family: Consolas, monospace; word-break: break-all; }
+
+  /* 嘲讽主卡 */
+  .troll-card { position: relative; overflow: hidden; text-align: center; padding: 46px 30px; }
+  .troll-card::before {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(120deg, transparent 30%, rgba(255,255,255,.04) 50%, transparent 70%);
+    background-size: 250% 100%; animation: sheen 6s linear infinite;
+  }
+  @keyframes sheen { 0% { background-position: 200% 0; } 100% { background-position: -50% 0; } }
+  .lang-pill {
+    display: inline-block; font-size: 13px; font-weight: 700;
+    color: var(--cyan); border: 1px solid rgba(0,210,255,.35); background: rgba(0,210,255,.08);
+    padding: 5px 14px; border-radius: 999px; letter-spacing: 1px;
+  }
+  .troll-text {
+    margin: 26px auto 8px; max-width: 640px;
+    font-size: clamp(18px, 3vw, 26px); line-height: 1.7; font-weight: 600;
+    min-height: 3.4em; display: flex; align-items: center; justify-content: center;
+  }
+  .troll-text .cursor { display: inline-block; width: 10px; height: 1.2em; margin-left: 3px; background: var(--cyan); animation: blink .8s steps(2) infinite; vertical-align: -0.15em; }
+  .troll-sub { color: var(--dim); font-size: 13px; font-family: Consolas, monospace; }
+
+  /* 按钮 */
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 22px; }
+  .btn {
+    appearance: none; cursor: pointer; font-family: inherit; font-size: 14px; font-weight: 600;
+    padding: 11px 22px; border-radius: 10px; color: var(--fg);
+    background: rgba(255,255,255,.06); border: 1px solid var(--border);
+    transition: all .18s ease; display: inline-flex; align-items: center; gap: 8px;
+  }
+  .btn:hover { background: rgba(255,255,255,.12); transform: translateY(-1px); }
+  .btn.primary { background: linear-gradient(135deg, rgba(255,71,87,.85), rgba(255,159,67,.85)); border-color: transparent; color: #fff; }
+  .btn.primary:hover { filter: brightness(1.1); }
+  .btn:active { transform: translateY(0); }
+
+  /* 语料库网格 */
+  .lang-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+  .lang-item { padding: 14px 16px; border-radius: 12px; background: rgba(255,255,255,.03); border: 1px solid var(--border); }
+  .lang-item .lh { font-size: 12px; color: var(--cyan); font-family: Consolas, monospace; margin-bottom: 6px; }
+  .lang-item .lt { font-size: 14px; line-height: 1.6; color: var(--fg); }
+
+  /* 终端 */
+  .terminal {
+    background: rgba(4, 8, 12, .75);
+    border: 1px solid var(--border);
+    border-radius: 14px; overflow: hidden;
+    font-family: Consolas, "Courier New", monospace; font-size: 13px;
+  }
+  .term-bar {
+    display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+    background: rgba(255,255,255,.04); border-bottom: 1px solid var(--border);
+  }
+  .term-bar .t-dot { width: 11px; height: 11px; border-radius: 50%; }
+  .term-bar .t-dot:nth-child(1) { background: #ff5f57; } .term-bar .t-dot:nth-child(2) { background: #febc2e; } .term-bar .t-dot:nth-child(3) { background: #28c840; }
+  .term-bar .t-title { margin-left: 8px; color: var(--dim); font-size: 12px; }
+  .term-body { padding: 16px; min-height: 220px; max-height: 340px; overflow-y: auto; line-height: 1.8; }
+  .term-body .ln { white-space: pre-wrap; word-break: break-all; }
+  .ln .t-time { color: #4a5a72; margin-right: 8px; }
+  .ln .t-ok { color: var(--green); } .ln .t-warn { color: var(--amber); } .ln .t-err { color: var(--red); } .ln .t-info { color: var(--cyan); } .ln .t-dim { color: var(--dim); }
+
+  footer { margin-top: 30px; text-align: center; color: var(--dim); font-size: 12px; line-height: 1.8; }
+  footer code { background: rgba(255,255,255,.07); padding: 2px 7px; border-radius: 5px; font-family: Consolas, monospace; }
+
+  @media (max-width: 560px) {
+    .wrap { padding: 20px 14px 48px; }
+    .card { padding: 18px; }
+    .troll-card { padding: 34px 18px; }
+  }
+</style>
+</head>
+<body>
+<div class="grid"></div>
+<div class="scanline"></div>
+
+<div class="wrap">
+  <!-- 顶部状态栏 -->
+  <div class="topbar">
+    <span><span class="dot"></span><span class="status-ok">HONEYPOT&nbsp;ACTIVE</span></span>
+    <span class="right" id="clock">--:--:--</span>
+  </div>
+
+  <!-- 标题 -->
+  <div class="hero">
+    <div class="kicker" data-i18n="kicker">⚠ 未授权访问已检测</div>
+    <h1 id="heroTitle" data-i18n="hero.title">入侵尝试已记录</h1>
+    <p id="heroSub" data-i18n="hero.sub">你扫到的东西，只有这张嘲讽页面。建议收藏，下次别白费力气。</p>
+  </div>
+
+  <!-- 检测详情 -->
+  <div class="glass card">
+    <h2 data-i18n="card.threat">威胁分析 · Threat Analysis</h2>
+    <div class="badges" id="badges"></div>
+    <div class="meta-grid">
+      <div class="meta-item"><div class="label" data-i18n="meta.sample">匹配特征</div><div class="value kbd" id="matchSample">—</div></div>
+      <div class="meta-item"><div class="label" data-i18n="meta.level">威胁等级</div><div class="value" id="level" style="color:var(--red)">—</div></div>
+      <div class="meta-item"><div class="label" data-i18n="meta.ua">用户代理</div><div class="value" id="ua">—</div></div>
+      <div class="meta-item"><div class="label" data-i18n="meta.referer">来源页面</div><div class="value" id="referer">—</div></div>
+      <div class="meta-item"><div class="label" data-i18n="meta.time">请求时间</div><div class="value" id="time">—</div></div>
+      <div class="meta-item"><div class="label" data-i18n="meta.len">请求长度</div><div class="value" id="len">—</div></div>
+    </div>
+  </div>
+
+  <!-- 嘲讽主卡 -->
+  <div class="glass troll-card">
+    <span class="lang-pill" id="langPill">🇨🇳 中文</span>
+    <div class="troll-text"><span id="trollText"></span><span class="cursor"></span></div>
+    <div class="troll-sub" id="trollSub">TROLL ENGINE</div>
+    <div class="actions">
+      <button class="btn" id="btnLang" data-i18n="btn.lang">🌐 切换语言</button>
+      <button class="btn" id="btnCopy" data-i18n="btn.copy">📋 复制嘲讽</button>
+      <button class="btn primary" id="btnRescan" data-i18n="btn.rescan">🔄 重新检测</button>
+    </div>
+  </div>
+
+  <!-- 语料库 -->
+  <div class="glass card">
+    <h2 data-i18n="card.corpus">嘲讽语料库 · 10 种语言</h2>
+    <div class="lang-grid" id="corpus"></div>
+  </div>
+
+  <!-- 终端日志 -->
+  <div class="terminal">
+    <div class="term-bar">
+      <span class="t-dot"></span><span class="t-dot"></span><span class="t-dot"></span>
+      <span class="t-title">honeypot@troll: ~/sensors — zsh</span>
+    </div>
+    <div class="term-body" id="termBody"></div>
+  </div>
+
+  <footer>
+    <p data-i18n="footer.line1">本页面为蜜罐/陷阱页，仅用于安全研究与防御演示。</p>
+    <p data-i18n-html="footer.line2">请勿用于恶意用途。此页不会收集或上传任何数据——<code>别找了，真的没后端。</code></p>
+  </footer>
+</div>
+
+<script>
+"use strict";
+
+/* ============ 语言列表 ============ */
+const LANGS = [
+  { code: "zh", flag: "🇨🇳", name: "中文" },
+  { code: "en", flag: "🇺🇸", name: "English" },
+  { code: "ja", flag: "🇯🇵", name: "日本語" },
+  { code: "ko", flag: "🇰🇷", name: "한국어" },
+  { code: "ru", flag: "🇷🇺", name: "Русский" },
+  { code: "fr", flag: "🇫🇷", name: "Français" },
+  { code: "de", flag: "🇩🇪", name: "Deutsch" },
+  { code: "es", flag: "🇪🇸", name: "Español" },
+  { code: "it", flag: "🇮🇹", name: "Italiano" },
+  { code: "ar", flag: "🇸🇦", name: "العربية" }
+];
+
+/* ============ 嘲讽语料库 ============ */
+const TROLLS = {
+  generic: {
+    zh: "这里什么都没有。你扫描了半天，就为了看一张嘲讽页面？",
+    en: "Nothing here but disappointment. Enjoy your scan, bot.",
+    ja: "ここには何もない。スキャンして見つけたのは、嘲笑だけさ。",
+    ko: "여기엔 아무것도 없어. 스캔해 봤자 조롱만 받을 뿐이야.",
+    ru: "Здесь ничего нет. Ты сканировал всё это время, чтобы найти насмешку?",
+    fr: "Rien à voir ici. Tu as scanné tout ça pour une moquerie ?",
+    de: "Hier gibt es nichts. Du hast gescannt, um dich verspotten zu lassen?",
+    es: "No hay nada aquí. Escaneaste todo esto para recibir burlas.",
+    it: "Non c'è niente qui. Hai scansionato tutto per essere deriso?",
+    ar: "لا يوجد شيء هنا. هل مسحت كل هذا لتتعرض للسخرية؟"
+  },
+  sql: {
+    zh: "还在用 ' OR '1'='1？2005 年的黑客都早就毕业了。",
+    en: "Still trying ' OR '1'='1? Even 2005-era hackers have moved on.",
+    ja: "まだ ' OR '1'='1 か？2005年のハッカーだって卒業してるよ。",
+    ru: "Всё ещё пробуешь ' OR '1'='1? Даже хакеры 2005 года это переросли.",
+    ar: "ما زلت تحاول ' OR '1'='1؟ حتى قراصنة 2005 تخلوا عن ذلك."
+  },
+  xss: {
+    zh: "你的 <script>alert(1)<\/script> 就这？这连大一期末考都过不了。",
+    en: "Your <script>alert(1)<\/script>? That wouldn't pass a freshman exam.",
+    ja: "<script>alert(1)<\/script> か？それ、大学1年の課題にも満たないよ。",
+    fr: "Ton <script>alert(1)<\/script> ? Ça ne passerait même pas un examen de première année.",
+    ru: "Твой <script>alert(1)<\/script>? Это даже на зачёте не пройдёт."
+  },
+  traversal: {
+    zh: "连 /etc/passwd 都翻不出来，你是不是把黑客手册背错页了？",
+    en: "Can't even reach /etc/passwd? Did you memorize the wrong page of the hacker handbook?",
+    ja: "/etc/passwd すら取れないの？ハッカー入門書のページを間違えて覚えた？",
+    de: "Schaffst du nicht mal /etc/passwd? Falsche Seite im Hacker-Handbuch gelernt?",
+    ru: "Даже /etc/passwd не достал? Ты не ту страницу учебника хакера выучил?"
+  },
+  scan: {
+    zh: "把常见路径扫了个遍，结果只扫出一个事实：你很勤奋，但没天赋。",
+    en: "You brute-forced every common path and found one thing: you're persistent, but not smart.",
+    ja: "よくあるパスを総当たりして見つけたのは一つの事実：君は粘り強いが、賢くはない。",
+    ko: "흔한 경로를 다 스캔해서 찾은 건 하나뿐: 넌 끈질기지만, 똑똑하진 않아.",
+    es: "Escaneaste todas las rutas comunes y encontraste una cosa: eres persistente, pero no listo."
+  },
+  bot: {
+    zh: "尊敬的无头浏览器，你绕过蜜罐，就为了抵达……这张嘲讽页面。",
+    en: "Dear headless browser, you bypassed the honeypot only to reach... this troll page.",
+    ja: "親愛なるヘッドレスブラウザよ、ハニーポットを突破して辿り着いたのは…この嘲笑ページだ。",
+    ko: "친애하는 헤드리스 브라우저, 허니팟을 뚫고 도착한 곳은... 이 조롱 페이지입니다.",
+    ru: "Уважаемый безголовый браузер, ты обошёл мой honeypot, чтобы найти... эту страницу насмешки."
+  }
+};
+
+/* 攻击类型名（10 语言） */
+const ATTRS = {
+  sql: { zh: "SQL 注入", en: "SQL Injection", ja: "SQLインジェクション", ko: "SQL 인젝션", ru: "SQL-инъекция", fr: "Injection SQL", de: "SQL-Injection", es: "Inyección SQL", it: "Iniezione SQL", ar: "حقن SQL" },
+  xss: { zh: "跨站脚本", en: "XSS", ja: "XSS", ko: "XSS", ru: "XSS", fr: "XSS", de: "XSS", es: "XSS", it: "XSS", ar: "XSS" },
+  traversal: { zh: "目录穿越", en: "Path Traversal", ja: "ディレクトリトラバーサル", ko: "디렉토리 트래버설", ru: "Обход каталога", fr: "Traversée de répertoire", de: "Pfad-Traversal", es: "Travesía de directorios", it: "Traversal di directory", ar: "اجتياز المسار" },
+  scan: { zh: "目录扫描", en: "Directory Scan", ja: "ディレクトリスキャン", ko: "디렉토리 스캔", ru: "Сканирование каталогов", fr: "Scan de répertoires", de: "Verzeichnisscan", es: "Escaneo de directorios", it: "Scansione directory", ar: "فحص الدليل" },
+  bot: { zh: "爬虫/扫描器", en: "Crawler / Scanner", ja: "クローラー/スキャナー", ko: "크롤러/스캐너", ru: "Краулер/сканер", fr: "Robot d'exploration", de: "Crawler/Scanner", es: "Rastreador/Escáner", it: "Crawler/Scanner", ar: "زاحف/ماسح" }
+};
+
+/* ============ 全局 UI 文案（10 语言） ============ */
+const I18N = {
+  zh: {
+    kicker: "⚠ 未授权访问已检测", "hero.title": "入侵尝试已记录",
+    "hero.sub": "你扫到的东西，只有这张嘲讽页面。建议收藏，下次别白费力气。",
+    "card.threat": "威胁分析 · Threat Analysis",
+    "meta.sample": "匹配特征", "meta.level": "威胁等级", "meta.ua": "用户代理",
+    "meta.referer": "来源页面", "meta.time": "请求时间", "meta.len": "请求长度",
+    "badge.clean": "✓ 未命中已知攻击特征（但你能到这来，也算不上正常访客）",
+    "level.low": "低 / 未知", "level.high": "高", "level.critical": "严重",
+    "troll.sub": "TROLL ENGINE // 已针对「{type}」生成嘲讽 · {lang}",
+    "card.corpus": "嘲讽语料库 · 10 种语言",
+    "btn.lang": "🌐 切换语言", "btn.copy": "📋 复制嘲讽", "btn.rescan": "🔄 重新检测",
+    "footer.line1": "本页面为蜜罐/陷阱页，仅用于安全研究与防御演示。",
+    "footer.line2": "请勿用于恶意用途。此页不会收集或上传任何数据——<code>别找了，真的没后端。</code>",
+    "docTitle": "HONEYPOT // 蜜罐嘲讽系统",
+    "ua.none": "直接访问 / 无来源",
+    "log.init": "[*] HONEYPOT 初始化完成，传感器已就位",
+    "log.target": "[*] 目标地址: {url}",
+    "log.analyzing": "[*] 正在分析请求特征…",
+    "log.hit": "[!] 命中规则 {name} → 匹配样本: {sample}",
+    "log.longUrl": "[!] 请求长度异常 ({n} 字符) → 疑似畸形请求",
+    "log.total": "[!] 共命中 {n} 类攻击特征",
+    "log.threat": "[!] 威胁等级: {level} — 已启动嘲讽协议",
+    "log.noHit": "[✓] 未命中已知攻击特征",
+    "log.sneak": "[i] 但能走到这个页面，你多少沾点。启动嘲讽协议。",
+    "log.lang": "[*] 已选择语言: {name}",
+    "log.ip": "[i] 已记录你的 IP 到黑名单数据库（骗你的，没有后端，吓吓你）",
+    "log.done": "[✓] 嘲讽生成完毕。享受这张 {n} 种语言的页面吧。",
+    "log.copyOk": "[✓] 嘲讽已复制到剪贴板，记得发给同行",
+    "log.copyOk2": "[✓] 嘲讽已复制（兼容模式）",
+    "log.rescan": "[*] 手动触发重新检测…",
+    "log.switch": "[i] 语言已切换: {flag} {name}"
+  },
+  en: {
+    kicker: "⚠ Unauthorized Access Detected", "hero.title": "Intrusion Attempt Logged",
+    "hero.sub": "All your scanning got you is this troll page. Bookmark it — save yourself the effort next time.",
+    "card.threat": "Threat Analysis",
+    "meta.sample": "Matching Payload", "meta.level": "Threat Level", "meta.ua": "User Agent",
+    "meta.referer": "Referrer", "meta.time": "Request Time", "meta.len": "Request Length",
+    "badge.clean": "✓ No known attack signature (though you're hardly a normal visitor either)",
+    "level.low": "Low / Unknown", "level.high": "High", "level.critical": "Critical",
+    "troll.sub": "TROLL ENGINE // troll generated for \"{type}\" · {lang}",
+    "card.corpus": "Troll Corpus · 10 Languages",
+    "btn.lang": "🌐 Switch Language", "btn.copy": "📋 Copy Troll", "btn.rescan": "🔄 Rescan",
+    "footer.line1": "This is a honeypot / decoy page for security research and defensive demo only.",
+    "footer.line2": "Don't use it maliciously. This page collects nothing — <code>stop digging, there's no backend.</code>",
+    "docTitle": "HONEYPOT // Troll System",
+    "ua.none": "Direct access / none",
+    "log.init": "[*] HONEYPOT initialized, sensors armed",
+    "log.target": "[*] Target: {url}",
+    "log.analyzing": "[*] Analyzing request signatures…",
+    "log.hit": "[!] Rule hit {name} → sample: {sample}",
+    "log.longUrl": "[!] Abnormal request length ({n} chars) → suspicious malformed request",
+    "log.total": "[!] {n} attack signature type(s) hit",
+    "log.threat": "[!] Threat level: {level} — troll protocol engaged",
+    "log.noHit": "[✓] No known attack signature",
+    "log.sneak": "[i] But you found this page anyway — you're up to something. Engaging troll protocol.",
+    "log.lang": "[*] Language selected: {name}",
+    "log.ip": "[i] Your IP has been logged to the blacklist (just kidding — no backend. Spooky though, right?)",
+    "log.done": "[✓] Troll generated. Enjoy this {n}-language page.",
+    "log.copyOk": "[✓] Troll copied to clipboard — share it with your fellow scanners",
+    "log.copyOk2": "[✓] Troll copied (fallback mode)",
+    "log.rescan": "[*] Manual rescan triggered…",
+    "log.switch": "[i] Language switched: {flag} {name}"
+  },
+  ja: {
+    kicker: "⚠ 不正アクセスを検出", "hero.title": "侵入試行を記録しました",
+    "hero.sub": "スキャンして手に入れたのは、この嘲笑ページだけ。ブックマークしておけば、次回は無駄な努力が省ける。",
+    "card.threat": "脅威分析",
+    "meta.sample": "一致するペイロード", "meta.level": "脅威レベル", "meta.ua": "ユーザーエージェント",
+    "meta.referer": "参照元", "meta.time": "リクエスト時刻", "meta.len": "リクエスト長",
+    "badge.clean": "✓ 既知の攻撃シグネチャはなし（でも、ここに来た時点で普通の訪問者じゃない）",
+    "level.low": "低 / 不明", "level.high": "高", "level.critical": "致命的",
+    "troll.sub": "TROLL ENGINE // 「{type}」向けの嘲笑を生成 · {lang}",
+    "card.corpus": "嘲笑コーパス · 10言語",
+    "btn.lang": "🌐 言語を切替", "btn.copy": "📋 嘲笑をコピー", "btn.rescan": "🔄 再スキャン",
+    "footer.line1": "このページはハニーポット/デコイであり、セキュリティ研究と防御デモ専用です。",
+    "footer.line2": "悪用は禁止。このページはデータを一切収集・送信しません——<code>探さなくていい、バックエンドはない。</code>",
+    "docTitle": "HONEYPOT // 嘲笑システム",
+    "ua.none": "直接アクセス / なし",
+    "log.init": "[*] HONEYPOT 初期化完了、センサー起動済み",
+    "log.target": "[*] 対象アドレス: {url}",
+    "log.analyzing": "[*] リクエスト特徴を分析中…",
+    "log.hit": "[!] ルール {name} に一致 → サンプル: {sample}",
+    "log.longUrl": "[!] リクエスト長が異常 ({n} 文字) → 不正なリクエストの疑い",
+    "log.total": "[!] {n} 種類の攻撃特徴に一致",
+    "log.threat": "[!] 脅威レベル: {level} — 嘲笑プロトコル起動",
+    "log.noHit": "[✓] 既知の攻撃特徴なし",
+    "log.sneak": "[i] でもここに来た以上、何かやましいことがある。嘲笑プロトコル起動。",
+    "log.lang": "[*] 言語を選択: {name}",
+    "log.ip": "[i] あなたのIPをブラックリストに記録しました（嘘です。バックエンドはありません。びっくりした？）",
+    "log.done": "[✓] 嘲笑の生成完了。{n}言語のページを楽しんで。",
+    "log.copyOk": "[✓] 嘲笑をクリップボードにコピー。仲間にも送ってあげて",
+    "log.copyOk2": "[✓] 嘲笑をコピーしました（互換モード）",
+    "log.rescan": "[*] 手動で再スキャンを実行…",
+    "log.switch": "[i] 言語を切替: {flag} {name}"
+  },
+  ko: {
+    kicker: "⚠ 무단 액세스 감지됨", "hero.title": "침입 시도가 기록되었습니다",
+    "hero.sub": "스캔해서 얻은 건 이 조롱 페이지뿐. 북마크해 두면 다음엔 헛수고를 줄일 수 있을 거야.",
+    "card.threat": "위협 분석",
+    "meta.sample": "일치 페이로드", "meta.level": "위협 수준", "meta.ua": "사용자 에이전트",
+    "meta.referer": "리퍼러", "meta.time": "요청 시각", "meta.len": "요청 길이",
+    "badge.clean": "✓ 알려진 공격 패턴 없음 (하지만 여기까지 온 이상 정상적인 방문자는 아니지)",
+    "level.low": "낮음 / 알 수 없음", "level.high": "높음", "level.critical": "치명적",
+    "troll.sub": "TROLL ENGINE // 「{type}」대상 조롱 생성 · {lang}",
+    "card.corpus": "조롱 말뭉치 · 10개 언어",
+    "btn.lang": "🌐 언어 전환", "btn.copy": "📋 조롱 복사", "btn.rescan": "🔄 다시 스캔",
+    "footer.line1": "이 페이지는 허니팟/미끼 페이지로, 보안 연구와 방어 데모 전용입니다.",
+    "footer.line2": "악용하지 마세요. 이 페이지는 데이터를 수집하거나 전송하지 않습니다 — <code>그만 찾아봐, 백엔드는 없어.</code>",
+    "docTitle": "HONEYPOT // 조롱 시스템",
+    "ua.none": "직접 접근 / 없음",
+    "log.init": "[*] HONEYPOT 초기화 완료, 센서 가동",
+    "log.target": "[*] 대상 주소: {url}",
+    "log.analyzing": "[*] 요청 특징 분석 중…",
+    "log.hit": "[!] 규칙 {name} 적중 → 샘플: {sample}",
+    "log.longUrl": "[!] 요청 길이 이상 ({n}자) → 비정상 요청 의심",
+    "log.total": "[!] {n}가지 공격 패턴 적중",
+    "log.threat": "[!] 위협 수준: {level} — 조롱 프로토콜 가동",
+    "log.noHit": "[✓] 알려진 공격 패턴 없음",
+    "log.sneak": "[i] 그래도 여기까지 온 걸 보면 뭔가 수상한 게 있지. 조롱 프로토콜 가동.",
+    "log.lang": "[*] 언어 선택: {name}",
+    "log.ip": "[i] 당신의 IP를 블랙리스트에 기록했습니다 (농담, 백엔드 없음. 겁먹었지?)",
+    "log.done": "[✓] 조롱 생성 완료. {n}개 언어 페이지를 즐기세요.",
+    "log.copyOk": "[✓] 조롱이 클립보드에 복사됨. 동료들에게도 보내줘",
+    "log.copyOk2": "[✓] 조롱 복사됨 (호환 모드)",
+    "log.rescan": "[*] 수동 재스캔 실행…",
+    "log.switch": "[i] 언어 전환: {flag} {name}"
+  },
+  ru: {
+    kicker: "⚠ Обнаружен несанкционированный доступ", "hero.title": "Попытка вторжения зафиксирована",
+    "hero.sub": "Всё, что ты нашёл сканированием — эта страница насмешки. Добавь в закладки, сэкономишь время в следующий раз.",
+    "card.threat": "Анализ угроз",
+    "meta.sample": "Совпавший фрагмент", "meta.level": "Уровень угрозы", "meta.ua": "User-Agent",
+    "meta.referer": "Источник", "meta.time": "Время запроса", "meta.len": "Длина запроса",
+    "badge.clean": "✓ Известных сигнатур атак нет (хотя обычным посетителем тебя тоже не назвать)",
+    "level.low": "Низкий / неизвестно", "level.high": "Высокий", "level.critical": "Критический",
+    "troll.sub": "TROLL ENGINE // насмешка для «{type}» · {lang}",
+    "card.corpus": "Корпус насмешек · 10 языков",
+    "btn.lang": "🌐 Сменить язык", "btn.copy": "📋 Копировать насмешку", "btn.rescan": "🔄 Повторное сканирование",
+    "footer.line1": "Эта страница — honeypot/приманка, только для исследований безопасности и демонстрации защиты.",
+    "footer.line2": "Не используй во вред. Эта страница ничего не собирает — <code>хватит копать, бэкенда нет.</code>",
+    "docTitle": "HONEYPOT // Система насмешек",
+    "ua.none": "Прямой доступ / нет",
+    "log.init": "[*] HONEYPOT инициализирован, датчики активны",
+    "log.target": "[*] Цель: {url}",
+    "log.analyzing": "[*] Анализ сигнатур запроса…",
+    "log.hit": "[!] Сработало правило {name} → фрагмент: {sample}",
+    "log.longUrl": "[!] Аномальная длина запроса ({n} симв.) → подозрительный запрос",
+    "log.total": "[!] Совпадение по {n} типам атак",
+    "log.threat": "[!] Уровень угрозы: {level} — протокол насмешки запущен",
+    "log.noHit": "[✓] Известных сигнатур нет",
+    "log.sneak": "[i] Но раз ты сюда добрался — что-то ты замышляешь. Запускаю протокол насмешки.",
+    "log.lang": "[*] Язык выбран: {name}",
+    "log.ip": "[i] Твой IP занесён в чёрный список (шучу — бэкенда нет. Страшно, да?)",
+    "log.done": "[✓] Насмешка сгенерирована. Наслаждайся страницей на {n} языках.",
+    "log.copyOk": "[✓] Насмешка скопирована — поделись с коллегами-сканерами",
+    "log.copyOk2": "[✓] Насмешка скопирована (режим совместимости)",
+    "log.rescan": "[*] Ручное сканирование…",
+    "log.switch": "[i] Язык сменён: {flag} {name}"
+  },
+  fr: {
+    kicker: "⚠ Accès non autorisé détecté", "hero.title": "Tentative d'intrusion enregistrée",
+    "hero.sub": "Tout ce que ton scan t'a apporté, c'est cette page moqueuse. Ajoute-la aux favoris, tu économiseras tes efforts.",
+    "card.threat": "Analyse des menaces",
+    "meta.sample": "Charge utile", "meta.level": "Niveau de menace", "meta.ua": "Agent utilisateur",
+    "meta.referer": "Référent", "meta.time": "Heure de la requête", "meta.len": "Longueur de la requête",
+    "badge.clean": "✓ Aucune signature d'attaque connue (mais tu n'es pas non plus un visiteur ordinaire)",
+    "level.low": "Faible / inconnu", "level.high": "Élevé", "level.critical": "Critique",
+    "troll.sub": "TROLL ENGINE // moquerie générée pour « {type} » · {lang}",
+    "card.corpus": "Corpus de moqueries · 10 langues",
+    "btn.lang": "🌐 Changer de langue", "btn.copy": "📋 Copier la moquerie", "btn.rescan": "🔄 Relancer l'analyse",
+    "footer.line1": "Cette page est un honeypot / leurre, uniquement pour la recherche en sécurité et la démo défensive.",
+    "footer.line2": "N'en faites pas un usage malveillant. Cette page ne collecte rien — <code>arrête de chercher, pas de backend.</code>",
+    "docTitle": "HONEYPOT // Système de moquerie",
+    "ua.none": "Accès direct / aucun",
+    "log.init": "[*] HONEYPOT initialisé, capteurs prêts",
+    "log.target": "[*] Cible : {url}",
+    "log.analyzing": "[*] Analyse des signatures de requête…",
+    "log.hit": "[!] Règle {name} déclenchée → charge : {sample}",
+    "log.longUrl": "[!] Longueur anormale ({n} car.) → requête suspecte",
+    "log.total": "[!] {n} type(s) de signatures atteints",
+    "log.threat": "[!] Niveau : {level} — protocole de moquerie engagé",
+    "log.noHit": "[✓] Aucune signature connue",
+    "log.sneak": "[i] Mais tu es quand même arrivé ici — tu manigances quelque chose. Protocole engagé.",
+    "log.lang": "[*] Langue choisie : {name}",
+    "log.ip": "[i] Votre IP a été enregistrée sur liste noire (blague — pas de backend. Ça fait peur, non ?)",
+    "log.done": "[✓] Moquerie générée. Profite de cette page en {n} langues.",
+    "log.copyOk": "[✓] Moquerie copiée — partage-la avec tes confrères",
+    "log.copyOk2": "[✓] Moquerie copiée (mode compatibilité)",
+    "log.rescan": "[*] Relance manuelle…",
+    "log.switch": "[i] Langue changée : {flag} {name}"
+  },
+  de: {
+    kicker: "⚠ Unbefugter Zugriff erkannt", "hero.title": "Eindringversuch protokolliert",
+    "hero.sub": "Alles, was dein Scan dir gebracht hat, ist diese Troll-Seite. Speichere sie dir — spar dir beim nächsten Mal die Mühe.",
+    "card.threat": "Bedrohungsanalyse",
+    "meta.sample": "Treffer-Muster", "meta.level": "Bedrohungsstufe", "meta.ua": "User-Agent",
+    "meta.referer": "Referrer", "meta.time": "Zeitpunkt", "meta.len": "Länge",
+    "badge.clean": "✓ Keine bekannte Angriffssignatur (normal bist du aber auch nicht)",
+    "level.low": "Niedrig / unbekannt", "level.high": "Hoch", "level.critical": "Kritisch",
+    "troll.sub": "TROLL ENGINE // Troll erzeugt für „{type}\" · {lang}",
+    "card.corpus": "Troll-Korpus · 10 Sprachen",
+    "btn.lang": "🌐 Sprache wechseln", "btn.copy": "📋 Troll kopieren", "btn.rescan": "🔄 Erneut scannen",
+    "footer.line1": "Diese Seite ist eine Honeypot-/Lockseite, nur für Sicherheitsforschung und defensive Demo.",
+    "footer.line2": "Nicht böswillig nutzen. Diese Seite sammelt nichts — <code>vergiss es, es gibt kein Backend.</code>",
+    "docTitle": "HONEYPOT // Troll-System",
+    "ua.none": "Direktzugriff / keine",
+    "log.init": "[*] HONEYPOT initialisiert, Sensoren aktiv",
+    "log.target": "[*] Ziel: {url}",
+    "log.analyzing": "[*] Analysiere Anfragemuster…",
+    "log.hit": "[!] Regel {name} getroffen → Treffer: {sample}",
+    "log.longUrl": "[!] Ungewöhnliche Länge ({n} Zeichen) → verdächtige Anfrage",
+    "log.total": "[!] {n} Angriffsmuster getroffen",
+    "log.threat": "[!] Stufe: {level} — Troll-Protokoll aktiviert",
+    "log.noHit": "[✓] Keine bekannte Signatur",
+    "log.sneak": "[i] Aber du bist trotzdem hier — du führst etwas im Schilde. Troll-Protokoll aktiviert.",
+    "log.lang": "[*] Sprache gewählt: {name}",
+    "log.ip": "[i] Deine IP wurde gesperrt (Spaß — kein Backend. Gruselig, oder?)",
+    "log.done": "[✓] Troll erzeugt. Viel Spaß mit dieser {n}-sprachigen Seite.",
+    "log.copyOk": "[✓] Troll kopiert — teile ihn mit deinen Mit-Scannern",
+    "log.copyOk2": "[✓] Troll kopiert (Kompatibilitätsmodus)",
+    "log.rescan": "[*] Manueller Neustart…",
+    "log.switch": "[i] Sprache gewechselt: {flag} {name}"
+  },
+  es: {
+    kicker: "⚠ Acceso no autorizado detectado", "hero.title": "Intento de intrusión registrado",
+    "hero.sub": "Todo lo que tu escaneo te dio es esta página burlona. Guárdala en favoritos y ahorra esfuerzo la próxima vez.",
+    "card.threat": "Análisis de amenazas",
+    "meta.sample": "Carga coincidente", "meta.level": "Nivel de amenaza", "meta.ua": "Agente de usuario",
+    "meta.referer": "Referente", "meta.time": "Hora de la solicitud", "meta.len": "Longitud de la solicitud",
+    "badge.clean": "✓ Sin firmas de ataque conocidas (aunque tampoco eres un visitante normal)",
+    "level.low": "Bajo / desconocido", "level.high": "Alto", "level.critical": "Crítico",
+    "troll.sub": "TROLL ENGINE // burlas generadas para \"{type}\" · {lang}",
+    "card.corpus": "Corpus de burlas · 10 idiomas",
+    "btn.lang": "🌐 Cambiar idioma", "btn.copy": "📋 Copiar burla", "btn.rescan": "🔄 Volver a escanear",
+    "footer.line1": "Esta página es un honeypot / señuelo, solo para investigación de seguridad y demo defensiva.",
+    "footer.line2": "No lo uses con fines maliciosos. Esta página no recopila nada — <code>deja de buscar, no hay backend.</code>",
+    "docTitle": "HONEYPOT // Sistema de burlas",
+    "ua.none": "Acceso directo / ninguno",
+    "log.init": "[*] HONEYPOT inicializado, sensores listos",
+    "log.target": "[*] Objetivo: {url}",
+    "log.analyzing": "[*] Analizando firmas de solicitud…",
+    "log.hit": "[!] Regla {name} activada → muestra: {sample}",
+    "log.longUrl": "[!] Longitud anormal ({n} car.) → solicitud sospechosa",
+    "log.total": "[!] {n} tipos de firmas activados",
+    "log.threat": "[!] Nivel: {level} — protocolo de burlas activado",
+    "log.noHit": "[✓] Sin firmas conocidas",
+    "log.sneak": "[i] Pero llegaste hasta aquí — algo tramas. Activando protocolo.",
+    "log.lang": "[*] Idioma elegido: {name}",
+    "log.ip": "[i] Tu IP ha sido bloqueada (broma — no hay backend. Asusta, ¿verdad?)",
+    "log.done": "[✓] Burlas generadas. Disfruta esta página en {n} idiomas.",
+    "log.copyOk": "[✓] Burlas copiadas — compártelas con tus colegas",
+    "log.copyOk2": "[✓] Burlas copiadas (modo compatibilidad)",
+    "log.rescan": "[*] Reescaneo manual…",
+    "log.switch": "[i] Idioma cambiado: {flag} {name}"
+  },
+  it: {
+    kicker: "⚠ Accesso non autorizzato rilevato", "hero.title": "Tentativo di intrusione registrato",
+    "hero.sub": "Tutto ciò che il tuo scan ti ha portato è questa pagina di scherno. Aggiungila ai preferiti e risparmia fatica.",
+    "card.threat": "Analisi delle minacce",
+    "meta.sample": "Payload corrispondente", "meta.level": "Livello di minaccia", "meta.ua": "User-Agent",
+    "meta.referer": "Referrer", "meta.time": "Ora della richiesta", "meta.len": "Lunghezza richiesta",
+    "badge.clean": "✓ Nessuna firma di attacco nota (ma non sei nemmeno un visitatore normale)",
+    "level.low": "Basso / sconosciuto", "level.high": "Alto", "level.critical": "Critico",
+    "troll.sub": "TROLL ENGINE // scherno generato per \"{type}\" · {lang}",
+    "card.corpus": "Corpus di scherni · 10 lingue",
+    "btn.lang": "🌐 Cambia lingua", "btn.copy": "📋 Copia lo scherno", "btn.rescan": "🔄 Nuova scansione",
+    "footer.line1": "Questa pagina è un honeypot / esca, solo per ricerca sulla sicurezza e demo difensiva.",
+    "footer.line2": "Non usarla in modo malevolo. Questa pagina non raccoglie nulla — <code>basta cercare, non c'è backend.</code>",
+    "docTitle": "HONEYPOT // Sistema di scherno",
+    "ua.none": "Accesso diretto / nessuno",
+    "log.init": "[*] HONEYPOT inizializzato, sensori pronti",
+    "log.target": "[*] Obiettivo: {url}",
+    "log.analyzing": "[*] Analisi delle firme di richiesta…",
+    "log.hit": "[!] Regola {name} colpita → campione: {sample}",
+    "log.longUrl": "[!] Lunghezza anomala ({n} char) → richiesta sospetta",
+    "log.total": "[!] {n} tipi di firma colpiti",
+    "log.threat": "[!] Livello: {level} — protocollo di scherno attivo",
+    "log.noHit": "[✓] Nessuna firma nota",
+    "log.sneak": "[i] Ma sei comunque arrivato qui — combini qualcosa. Protocollo attivo.",
+    "log.lang": "[*] Lingua selezionata: {name}",
+    "log.ip": "[i] Il tuo IP è stato inserito in blacklist (scherzo — nessun backend. Fa paura, vero?)",
+    "log.done": "[✓] Scherno generato. Goditi questa pagina in {n} lingue.",
+    "log.copyOk": "[✓] Scherno copiato — condividilo con i tuoi colleghi",
+    "log.copyOk2": "[✓] Scherno copiato (modalità compatibilità)",
+    "log.rescan": "[*] Nuova scansione manuale…",
+    "log.switch": "[i] Lingua cambiata: {flag} {name}"
+  },
+  ar: {
+    kicker: "⚠ تم اكتشاف وصول غير مصرح به", "hero.title": "تم تسجيل محاولة التسلل",
+    "hero.sub": "كل ما حصلت عليه من مسحك هو هذه الصفحة الساخرة. أضفها للمفضلة لتوفر جهدك في المرة القادمة.",
+    "card.threat": "تحليل التهديدات",
+    "meta.sample": "الحمولة المطابقة", "meta.level": "مستوى التهديد", "meta.ua": "وكيل المستخدم",
+    "meta.referer": "الصفحة المصدر", "meta.time": "وقت الطلب", "meta.len": "طول الطلب",
+    "badge.clean": "✓ لا توجد تواقيع هجوم معروفة (ولكنك لست زائرًا عاديًا أيضًا)",
+    "level.low": "منخفض / غير معروف", "level.high": "مرتفع", "level.critical": "حرج",
+    "troll.sub": "TROLL ENGINE // تم توليد سخرية لـ «{type}» · {lang}",
+    "card.corpus": "مجموعة السخرية · 10 لغات",
+    "btn.lang": "🌐 تبديل اللغة", "btn.copy": "📋 نسخ السخرية", "btn.rescan": "🔄 إعادة الفحص",
+    "footer.line1": "هذه الصفحة هي فخ عسل/طعم، مخصصة فقط لأبحاث الأمن والعروض الدفاعية.",
+    "footer.line2": "لا تستخدمها لأغراض ضارة. هذه الصفحة لا تجمع أي شيء — <code>توقف عن البحث، لا يوجد خادم خلفي.</code>",
+    "docTitle": "HONEYPOT // نظام السخرية",
+    "ua.none": "وصول مباشر / لا شيء",
+    "log.init": "[*] تم تهيئة HONEYPOT، المستشعرات جاهزة",
+    "log.target": "[*] الهدف: {url}",
+    "log.analyzing": "[*] تحليل تواقيع الطلب…",
+    "log.hit": "[!] تم تفعيل قاعدة {name} → العينة: {sample}",
+    "log.longUrl": "[!] طول طلب غير طبيعي ({n} حرفًا) → طلب مشبوه",
+    "log.total": "[!] تم رصد {n} أنواع من تواقيع الهجوم",
+    "log.threat": "[!] المستوى: {level} — تم تفعيل بروتوكول السخرية",
+    "log.noHit": "[✓] لا توجد تواقيع معروفة",
+    "log.sneak": "[i] لكنك وصلت إلى هنا على أي حال — أنت تخطط لشيء ما. تفعيل البروتوكول.",
+    "log.lang": "[*] اللغة المختارة: {name}",
+    "log.ip": "[i] تم تسجيل عنوان IP الخاص بك في القائمة السوداء (مزحة — لا يوجد خادم. مخيف، أليس كذلك؟)",
+    "log.done": "[✓] تم توليد السخرية. استمتع بهذه الصفحة بـ {n} لغات.",
+    "log.copyOk": "[✓] تم نسخ السخرية — شاركها مع زملائك",
+    "log.copyOk2": "[✓] تم نسخ السخرية (وضع التوافق)",
+    "log.rescan": "[*] إعادة فحص يدوية…",
+    "log.switch": "[i] تم تغيير اللغة: {flag} {name}"
+  }
+};
+
+/* ============ 检测规则 ============ */
+const RULES = [
+  { id: "sql", patterns: [
+    /['"]\s*(or|and)\s+['"]?\d/i, /union\s+select/i, /select\s+.+\s+from/i,
+    /drop\s+table/i, /information_schema/i, /--\s*$/, /;\s*--/, /sleep\s*\(/i,
+    /concat\s*\(/i, /group\s+by/i, /0x[0-9a-f]{6,}/i, /\bwaitfor\b/i
+  ]},
+  { id: "xss", patterns: [
+    /<script/i, /javascript:/i, /onerror\s*=/i, /onload\s*=/i, /alert\s*\(/i,
+    /<img/i, /<svg/i, /<iframe/i, /document\.cookie/i, /eval\s*\(/i, /prompt\s*\(/i
+  ]},
+  { id: "traversal", patterns: [
+    /\.\.\//, /\.\.%2f/i, /\.\.\\/, /\/etc\/passwd/i, /\/etc\/shadow/i,
+    /\/windows\/win\.ini/i, /boot\.ini/i, /%2e%2e%2f/i
+  ]},
+  { id: "scan", patterns: [
+    /wp-admin/i, /wp-login/i, /\.env/i, /config\.php/i, /\.git\//i, /\.svn/i,
+    /phpmyadmin/i, /admin\.php/i, /xmlrpc\.php/i, /shell\.php/i, /\.bak/i, /\.sql/i
+  ]},
+  { id: "bot", patterns: [
+    /sqlmap/i, /nikto/i, /nessus/i, /nmap/i, /masscan/i, /acunetix/i,
+    /burpsuite/i, /hydra/i, /python-requests/i, /go-http-client/i,
+    /libwww-perl/i, /curl\//i, /wget/i, /MJ12bot/i, /AhrefsBot/i,
+    /SemrushBot/i, /DotBot/i, /Bytespider/i, /DataForSeoBot/i, /YandexBot/i
+  ]}
+];
+
+/* ============ 状态 ============ */
+const state = { lang: "zh", hitTypes: [], sample: null, longUrl: false };
+
+/* ============ 工具函数 ============ */
+const $ = id => document.getElementById(id);
+const termBody = $("termBody");
+
+function t(key, vars) {
+  const dict = I18N[state.lang] || I18N.zh;
+  let s = dict[key] != null ? dict[key] : (I18N.zh[key] != null ? I18N.zh[key] : key);
+  if (vars) for (const k in vars) s = s.split("{" + k + "}").join(String(vars[k]));
+  return s;
+}
+
+function now() { return new Date().toLocaleTimeString("en-GB", { hour12: false }); }
+
+function log(cls, msg) {
+  const line = document.createElement("div");
+  line.className = "ln";
+  line.innerHTML = `<span class="t-time">[${now()}]</span><span class="${cls}"></span>`;
+  line.lastChild.textContent = msg;
+  termBody.appendChild(line);
+  termBody.scrollTop = termBody.scrollHeight;
+}
+
+/* ============ 检测逻辑 ============ */
+function analyze() {
+  state.hitTypes = [];
+  state.longUrl = false;
+  const haystack = [location.href, decodeURIComponent(location.search), location.hash, navigator.userAgent, document.referrer].join("\n");
+  const samples = [];
+
+  for (const rule of RULES) {
+    const m = haystack.match(new RegExp(rule.patterns.map(p => p.source).join("|"), "i"));
+    if (m) {
+      state.hitTypes.push(rule.id);
+      samples.push(m[0]);
+      log("t-err", t("log.hit", { name: ATTRS[rule.id][state.lang], sample: m[0].slice(0, 60) }));
+    }
+  }
+
+  if (location.href.length > 2000) {
+    state.longUrl = true;
+    log("t-err", t("log.longUrl", { n: location.href.length }));
+  }
+
+  state.sample = samples[0] || null;
+  return state.hitTypes;
+}
+
+/* ============ 渲染 ============ */
+function renderBadges() {
+  const box = $("badges");
+  box.innerHTML = "";
+  const types = state.hitTypes;
+  const levelEl = $("level");
+  if (!types.length) {
+    box.innerHTML = `<span class="badge clean"></span>`;
+    box.firstChild.textContent = t("badge.clean");
+    levelEl.textContent = t("level.low");
+    levelEl.style.color = "var(--green)";
+    $("matchSample").textContent = "—";
+    return;
+  }
+  types.forEach(ft => {
+    const b = document.createElement("span");
+    b.className = "badge";
+    b.textContent = `⚠ ${ATTRS[ft][state.lang]}`;
+    box.appendChild(b);
+  });
+  levelEl.textContent = types.length > 1 ? t("level.critical") : t("level.high");
+  levelEl.style.color = "var(--red)";
+  $("matchSample").textContent = state.sample || "—";
+}
+
+function pickTroll(langCode) {
+  const types = state.hitTypes;
+  if (!types.length) return TROLLS.generic[langCode] || TROLLS.generic.zh;
+  const bucket = TROLLS[types[0]] || TROLLS.generic;
+  return bucket[langCode] || bucket.zh || TROLLS.generic[langCode] || TROLLS.generic.zh;
+}
+
+async function typewriter(el, text, speed = 42) {
+  el.textContent = "";
+  for (let i = 0; i < text.length; i++) {
+    el.textContent += text[i];
+    await new Promise(r => setTimeout(r, speed));
+  }
+}
+
+function showTroll(langCode, animate = true) {
+  const text = pickTroll(langCode);
+  const el = $("trollText");
+  if (animate) typewriter(el, text);
+  else el.textContent = text;
+  const typeName = state.hitTypes.length ? ATTRS[state.hitTypes[0]][langCode] : t("badge.clean").slice(2, 14);
+  const langName = LANGS.find(l => l.code === langCode).name;
+  $("trollSub").textContent = t("troll.sub", { type: typeName, lang: langName });
+}
+
+function renderCorpus() {
+  const grid = $("corpus");
+  grid.innerHTML = "";
+  LANGS.forEach(l => {
+    const item = document.createElement("div");
+    item.className = "lang-item";
+    const text = TROLLS.generic[l.code] || TROLLS.generic.zh;
+    const h = document.createElement("div");
+    h.className = "lh";
+    h.textContent = `${l.flag} ${l.name} / ${l.code}`;
+    const b = document.createElement("div");
+    b.className = "lt";
+    b.textContent = text;
+    item.appendChild(h);
+    item.appendChild(b);
+    grid.appendChild(item);
+  });
+}
+
+function detectLang() {
+  const raw = (navigator.language || navigator.userLanguage || "zh").toLowerCase();
+  const base = raw.split("-")[0].split("_")[0];
+  return LANGS.some(l => l.code === base) ? base : "zh";
+}
+
+/* ============ 全局语言应用 ============ */
+function applyLang(code) {
+  state.lang = code;
+  document.documentElement.lang = code;
+  document.title = t("docTitle");
+
+  // 静态文案
+  document.querySelectorAll("[data-i18n]").forEach(el => { el.textContent = t(el.dataset.i18n); });
+  document.querySelectorAll("[data-i18n-html]").forEach(el => { el.innerHTML = t(el.dataset.i18nHtml); });
+
+  // 动态区域
+  const lang = LANGS.find(l => l.code === code);
+  $("langPill").textContent = `${lang.flag} ${lang.name}`;
+  $("referer").textContent = document.referrer ? new URL(document.referrer).hostname : t("ua.none");
+  renderBadges();
+  showTroll(code, false);
+  renderCorpus();
+
+  // 终端日志随语言重放
+  termBody.innerHTML = "";
+  replayLog();
+}
+
+/* ============ 终端日志 ============ */
+function replayLog() {
+  log("t-info", t("log.init"));
+  log("t-info", t("log.target", { url: location.href.slice(0, 120) }));
+  log("t-dim", "UA: " + navigator.userAgent.slice(0, 100));
+  log("t-warn", t("log.analyzing"));
+
+  const types = state.hitTypes;
+  if (types.length) {
+    log("t-err", t("log.total", { n: types.length }));
+    log("t-err", t("log.threat", { level: types.length > 1 ? t("level.critical") : t("level.high") }));
+  } else {
+    log("t-ok", t("log.noHit"));
+    log("t-dim", t("log.sneak"));
+  }
+
+  log("t-info", t("log.lang", { name: LANGS.find(l => l.code === state.lang).name }));
+  log("t-dim", t("log.ip"));
+  log("t-ok", t("log.done", { n: LANGS.length }));
+}
+
+function run() {
+  analyze();
+  applyLang(detectLang());
+}
+
+/* ============ 交互 ============ */
+$("btnLang").addEventListener("click", () => {
+  const idx = LANGS.findIndex(l => l.code === state.lang);
+  const next = LANGS[(idx + 1) % LANGS.length];
+  applyLang(next.code);
+  log("t-info", t("log.switch", { flag: next.flag, name: next.name }));
+});
+
+$("btnCopy").addEventListener("click", async () => {
+  const text = $("trollText").textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    log("t-ok", t("log.copyOk"));
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    document.execCommand("copy"); ta.remove();
+    log("t-ok", t("log.copyOk2"));
+  }
+});
+
+$("btnRescan").addEventListener("click", () => {
+  log("t-warn", t("log.rescan"));
+  setTimeout(() => run(), 400);
+});
+
+/* 时钟 */
+setInterval(() => { $("clock").textContent = now(); }, 1000);
+
+/* 启动 */
+document.addEventListener("DOMContentLoaded", () => {
+  $("ua").textContent = navigator.userAgent.slice(0, 60);
+  $("time").textContent = new Date().toLocaleString();
+  $("len").textContent = location.href.length + " chars";
+  run();
+});
+</script>
+</body>
+</html>
